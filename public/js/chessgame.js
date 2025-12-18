@@ -27,7 +27,7 @@ const renderBoard = () => {
             squareElement.dataset.row = rowindex;
             squareElement.dataset.col = squareindex;
 
-            // --- COORDINATES ---
+            // Coordinates
             if (squareindex === 0) {
                 const rank = document.createElement("span");
                 rank.classList.add("coordinate", "rank");
@@ -84,10 +84,8 @@ const renderBoard = () => {
         });
     });
 
-    // --- FLIP LOGIC (THE FIX) ---
     if (playerRole === 'b') {
         boardElement.classList.add("flipped");
-        // This flips the UI bars so 'Black' is at the bottom for the black player
         document.body.classList.add("flex-col-reverse"); 
     } else {
         boardElement.classList.remove("flipped");
@@ -95,6 +93,7 @@ const renderBoard = () => {
     }
     
     updateCapturedPieces();
+    createHintButton(); 
 };
 
 const handleMove = (source, target) => {
@@ -125,7 +124,9 @@ socket.on("timeUpdate", (times) => {
     timerWhite.innerText = formatTime(times.w);
     timerBlack.innerText = formatTime(times.b);
     
-    // Highlight active timer
+    // Clear highlights on new turn
+    document.querySelectorAll('.highlight-hint').forEach(el => el.classList.remove('highlight-hint'));
+
     if(chess.turn() === 'w') {
         timerWhite.classList.add("bg-yellow-500", "text-black");
         timerWhite.classList.remove("bg-gray-700");
@@ -161,7 +162,6 @@ const updateCapturedPieces = () => {
             const capturedCount = startingPieces[type] - pieceCounts[color][type];
             for (let i = 0; i < capturedCount; i++) {
                 const icon = document.createElement("span");
-                // We show the icon of the PIECE that was captured
                 icon.innerText = getPieceUnicode({ type: type, color: color }); 
                 icon.classList.add("captured-piece");
                 container.appendChild(icon);
@@ -169,10 +169,88 @@ const updateCapturedPieces = () => {
         }
     };
 
-    // Pieces White has lost (Captured by Black) -> Show next to Black's name
     renderCaptured('w', capturedWhite);
-    // Pieces Black has lost (Captured by White) -> Show next to White's name
     renderCaptured('b', capturedBlack);
+};
+
+// --- AI HINT LOGIC (Fixed Placement & Faster) ---
+const createHintButton = () => {
+    // Remove old button if it exists
+    if(document.getElementById("hint-btn")) document.getElementById("hint-btn").remove();
+
+    const btn = document.createElement("button");
+    btn.id = "hint-btn";
+    btn.innerText = "💡 Hint";
+    btn.classList.add(
+        "px-3", "py-1", "bg-blue-600", "hover:bg-blue-700", 
+        "text-white", "font-bold", "rounded", "shadow", 
+        "transition", "duration-200", "text-sm", "mx-4" // Added margin mx-4
+    );
+
+    // 1. DYNAMIC PLACEMENT: Insert INSIDE the bar, not floating above
+    let myControlsId = playerRole === 'b' ? "controls-black" : "controls-white";
+    const myControls = document.getElementById(myControlsId);
+    
+    if(myControls) {
+        // We want to insert it before the last element (the Timer)
+        // Structure is: [Name+Captured] [Timer]
+        // We want: [Name+Captured] [Hint] [Timer]
+        myControls.insertBefore(btn, myControls.lastElementChild);
+    }
+
+    btn.addEventListener("click", async () => {
+        if (chess.game_over()) return alert("Game is over!");
+        if (playerRole && chess.turn() !== playerRole) return alert("It's not your turn!");
+
+        btn.innerText = "Thinking...";
+        btn.disabled = true;
+
+        try {
+            const response = await fetch('https://cdnjs.cloudflare.com/ajax/libs/stockfish.js/10.0.0/stockfish.js');
+            const blob = new Blob([await response.text()], { type: 'application/javascript' });
+            const stockfish = new Worker(URL.createObjectURL(blob));
+
+            stockfish.postMessage("position fen " + chess.fen());
+            
+            // 2. SPEED FIX: Reduced depth from 15 to 10
+            stockfish.postMessage("go depth 10"); 
+
+            stockfish.onmessage = function(event) {
+                if (event.data.includes("bestmove")) {
+                    const bestMove = event.data.split(" ")[1]; 
+                    
+                    highlightMove(bestMove);
+
+                    btn.innerText = "💡 Hint";
+                    btn.disabled = false;
+                    stockfish.terminate(); 
+                }
+            };
+        } catch (err) {
+            console.error(err);
+            btn.innerText = "Error";
+            btn.disabled = false;
+        }
+    });
+};
+
+const highlightMove = (moveStr) => {
+    const from = moveStr.substring(0, 2);
+    const to = moveStr.substring(2, 4);
+
+    const getSquareElement = (algebraic) => {
+        const file = algebraic.charCodeAt(0) - 97; 
+        const rank = 8 - parseInt(algebraic[1]);   
+        return document.querySelector(`.square[data-row="${rank}"][data-col="${file}"]`);
+    };
+
+    document.querySelectorAll('.highlight-hint').forEach(el => el.classList.remove('highlight-hint'));
+
+    const fromEl = getSquareElement(from);
+    const toEl = getSquareElement(to);
+
+    if (fromEl) fromEl.classList.add("highlight-hint");
+    if (toEl) toEl.classList.add("highlight-hint");
 };
 
 // --- SOCKET EVENTS ---
